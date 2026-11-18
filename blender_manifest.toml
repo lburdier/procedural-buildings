@@ -1,0 +1,22 @@
+schema_version = "1.0.0"
+
+id = "procedural_buildings"
+version = "1.4.0"
+name = "Bâtiments procéduraux"
+tagline = "New York buildings, streets and baked background cities"
+maintainer = "lburdier"
+type = "add-on"
+
+tags = ["Add Mesh", "Modeling", "Scene"]
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2026 lburdier"]
+
+[permissions]
+files = "Load Kitbash3D texture files from a folder chosen by the user"
+network = "Check GitHub for new releases and download updates"
+
+[build]
+paths_exclude_pattern = ["__pycache__/", "*.pyc", ".*"]

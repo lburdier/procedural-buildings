@@ -1,0 +1,52 @@
+# Release automatique : chaque poussee sur main dont blender_manifest.toml porte une version
+# sans release cree la release vX.Y.Z avec le zip de l'extension (celui que la mise a jour auto installe).
+name: Release automatique
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lire la version du manifeste
+        id: v
+        run: |
+          V=$(python3 -c 'import tomllib; print(tomllib.load(open("blender_manifest.toml","rb"))["version"])')
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Version du manifeste : $V"
+
+      - name: La release existe-t-elle deja ?
+        id: chk
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.v.outputs.version }}" > /dev/null 2>&1; then
+            echo "exists=1" >> "$GITHUB_OUTPUT"
+            echo "v${{ steps.v.outputs.version }} existe deja : rien a publier"
+          fi
+
+      - name: Construire le zip de l'extension
+        if: steps.chk.outputs.exists != '1'
+        run: python3 tools/build_zip.py dist
+
+      - name: Publier la release
+        if: steps.chk.outputs.exists != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          NOTES="release_notes/v$V.md"
+          if [ ! -f "$NOTES" ]; then
+            NOTES=$(mktemp)
+            git log -1 --format=%B > "$NOTES"
+          fi
+          gh release create "v$V" "dist/procedural_buildings-$V.zip" \
+            --title "Bâtiments procéduraux $V" --notes-file "$NOTES" --target "$GITHUB_SHA" --latest
