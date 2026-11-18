@@ -2,6 +2,8 @@
 
 Extension Blender (4.2 et plus, testée sur 5.3) qui génère des bâtiments new-yorkais du début du XXe siècle, dans l'esprit du kit Kitbash3D *Brooklyn* : immeubles de rapport en brique, maisons de ville à perron, entrepôts, immeubles d'avant-guerre, tours à redans et immeubles modernes. Elle génère aussi leurs variantes, des rues entières et des villes de fond de décor légères, aux textures cuites.
 
+![Une rue du Lower East Side générée par l'extension](docs/rue_lower_east_side.jpg)
+
 Tout est modélisé par le code, en vraie géométrie et sans booléen :
 
 - **Fenêtres** : en retrait, avec tableaux, menuiseries (guillotine, petits bois, vitrines), appuis, linteaux, clés de voûte et arcs en plein cintre ou segmentaires.
@@ -10,9 +12,11 @@ Tout est modélisé par le code, en vraie géométrie et sans booléen :
 - **Accessoires de toit** : châteaux d'eau, édicules, clims, ventilations, antennes, lanterneaux, cheminées.
 - **Façade et rez-de-chaussée** : escaliers de secours, bow-windows, devantures avec enseignes et auvents, perrons, quais de chargement, clims de fenêtre.
 
-Aucun maillage ni texture du kit Kitbash3D n'est inclus.
+Aucun maillage ni texture du kit Kitbash3D n'est inclus. Toutes les images de cette page sont rendues avec les matériaux procéduraux de l'extension.
 
 ## Styles
+
+![Les six styles, deux graines chacun](docs/styles.jpg)
 
 | Style | Gabarit | Signes distinctifs |
 |---|---|---|
@@ -26,6 +30,8 @@ Aucun maillage ni texture du kit Kitbash3D n'est inclus.
 Chaque style tire tous ses paramètres de la **graine** : gabarit, nombre de travées, matériaux, type de fenêtre, rez-de-chaussée, corniche, toiture, accessoires. Une même graine redonne toujours le même bâtiment.
 
 ## Presets
+
+![Les 24 presets](docs/presets.jpg)
 
 Les presets sont des bâtiments-types à silhouette fixe, inspirés des grands archétypes de Brooklyn et de Manhattan. Ils figent le gabarit, les matériaux, la trame et les ouvertures. La graine ne fait plus varier que les détails : équipements de toit, emplacement des portes et des escaliers de secours, clims, teinte (certains presets tirent aussi leur brique ou leur peinture parmi deux ou trois couleurs). Les réglages **Étages**, **Largeur** et **Profondeur** restent pris en compte (0 = valeurs du preset).
 
@@ -64,6 +70,8 @@ Tous les presets sont générés par le code de l'extension : aucun modèle du k
 2. Dans le menu **⌄** en haut à droite, choisissez **Install from Disk…**, puis sélectionnez `procedural_buildings-X.Y.Z.zip` téléchargé depuis la [dernière release](https://github.com/lburdier/procedural-buildings/releases/latest).
 3. Le panneau se trouve dans **Vue 3D › barre latérale (N) › onglet Bâtiments**.
 
+![Le panneau Bâtiments dans la barre latérale de la vue 3D](docs/interface.jpg)
+
 ## Mises à jour automatiques
 
 À partir de la 1.4.0, l'extension cherche une nouvelle version sur les [releases GitHub](https://github.com/lburdier/procedural-buildings/releases) au démarrage de Blender, une fois par jour au plus. Si elle en trouve une, elle la télécharge, vérifie sa taille et son empreinte sha256, puis l'installe avec l'installeur d'extensions de Blender.
@@ -93,6 +101,10 @@ Tous les presets sont générés par le code de l'extension : aucun modèle du k
 Les paramètres de chaque bâtiment sont stockés dans l'objet (propriétés `bg_params` et `bg_info`). On peut donc toujours le régénérer.
 
 ## Fond de décor (versions cuites)
+
+![Ville de fond aux textures cuites, vue aérienne](docs/ville_aerien.jpg)
+
+![La même ville vue depuis la rue](docs/ville_rue.jpg)
 
 Pour les arrière-plans, chaque bâtiment peut être remplacé par une **version de fond**. C'est un volume simplifié de 10 à 120 triangles qui garde la silhouette : retraits, mansarde, croupe, édicules et château d'eau. Ses textures sont cuites (Cycles) depuis le bâtiment détaillé :
 
