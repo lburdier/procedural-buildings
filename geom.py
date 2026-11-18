@@ -21,6 +21,8 @@ class MeshBuilder:
         self.rand = []         # valeur aleatoire par face (variation des vitres...)
         self.keys = []         # cles de materiau, dans l'ordre des emplacements
         self.mass = []         # volumes simplifies (version de fond) : etages, toits, edicules, chateaux d'eau
+        self.tag = 'wall'      # partie en cours de construction (controle des chevauchements, vieillissement)
+        self.tags = []         # partie de chaque face
 
     def mat(self, key):
         try:
@@ -40,6 +42,7 @@ class MeshBuilder:
         self.uvs.append(uv)
         self.mats.append(self.mat(key))
         self.rand.append(rnd)
+        self.tags.append(self.tag)
 
     def box(self, lo, hi, key, skip=(), rnd=0.0):
         """Boite alignee sur les axes du monde. skip : faces omises parmi '-x','+x','-y','+y','-z','+z'."""
@@ -99,16 +102,40 @@ class MeshBuilder:
         self.face(list(reversed(A)), key)
         self.face(B, key)
 
+    def drop(self, tags):
+        """Retire les faces de certaines parties (ex. 'decal' avant une cuisson), sommets compactes."""
+        keep = [i for i, t in enumerate(self.tags) if t not in tags]
+        if len(keep) == len(self.faces):
+            return self
+        verts, remap = [], {}
+        faces = []
+        for i in keep:
+            f = []
+            for vi in self.faces[i]:
+                if vi not in remap:
+                    remap[vi] = len(verts)
+                    verts.append(self.verts[vi])
+                f.append(remap[vi])
+            faces.append(tuple(f))
+        self.verts = verts
+        self.faces = faces
+        self.uvs = [self.uvs[i] for i in keep]
+        self.mats = [self.mats[i] for i in keep]
+        self.rand = [self.rand[i] for i in keep]
+        self.tags = [self.tags[i] for i in keep]
+        return self
+
     def append(self, other, offset=(0, 0, 0)):
         o = Vector(offset)
         base = len(self.verts)
         self.verts.extend(tuple(Vector(v) + o) for v in other.verts)
         remap = [self.mat(k) for k in other.keys]
-        for f, uv, m, r in zip(other.faces, other.uvs, other.mats, other.rand):
+        for f, uv, m, r, t in zip(other.faces, other.uvs, other.mats, other.rand, other.tags):
             self.faces.append(tuple(i + base for i in f))
             self.uvs.append(uv)
             self.mats.append(remap[m])
             self.rand.append(r)
+            self.tags.append(t)
 
     def to_mesh(self, name, materials, merge=True, mesh=None):
         me = mesh or bpy.data.meshes.new(name)

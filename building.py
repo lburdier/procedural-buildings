@@ -5,8 +5,9 @@ en metres. party=(gauche, droite) : murs mitoyens aveugles (rangee de batiments)
 import math
 from mathutils import Vector
 from .geom import MeshBuilder, Frame, sweep, offset_loop
-from .facade import build_facade, wall_cell, window
+from .facade import build_facade, wall_cell, window, decor, pier_spans
 from . import props as PR
+from . import services as SV
 
 T_WALL = 0.32          # epaisseur de l'acrotere
 
@@ -67,8 +68,11 @@ def _ring_xy(mb, outer, inner, z, key):
         mb.face([O[i], O[j], I[j], I[i]], key)
 
 
-def build(plan, rng, detail=1, party=(False, False), sidewalk=False, yard=0.0):
+def build(plan, rng, detail=1, party=(False, False), sidewalk=False, yard=0.0, rng2=None):
+    """rng2 : generateur des equipements et decalcomanies (v1.5) ; None : batiment sans eux (comme en v1.4)."""
     mb = MeshBuilder()
+    plan['_rng2'] = rng2
+    faces = []
     M = plan['mat']
     W, D = plan['W'], plan['D']
     n = plan['floors']
@@ -82,6 +86,7 @@ def build(plan, rng, detail=1, party=(False, False), sidewalk=False, yard=0.0):
     tiers[-1]['f1'] = n_vert
     info = dict(windows=0, floors=n, height=0.0)
     plan['_n_vert'] = n_vert
+    plan.pop('_awn', None)
     fe_sides = plan.get('fire_side', 'front')
     fe_sides = [fe_sides] if isinstance(fe_sides, str) else list(fe_sides)
     fe_done = set()
@@ -108,28 +113,72 @@ def build(plan, rng, detail=1, party=(False, False), sidewalk=False, yard=0.0):
         active = {}
         blank_of = {sd: ti == 0 and ((sd == 'left' and party[0]) or (sd == 'right' and party[1])) for sd in SIDES}
         ends = {'front': ('left', 'right'), 'right': ('front', 'back'), 'back': ('right', 'left'), 'left': ('back', 'front')}
+        decors = {}
         for side, fr, Wf in _side_frames(mb, rect):
             blank = blank_of[side]
             active[side] = not blank
             spec = _facade_spec(plan, M, side, Wf, zs, f0, f1, z_crown, blank, rng, top_tier and roof == 'mansard', ti)
             placed = build_facade(fr, spec, rng, detail)
+            decors[side] = (fr, spec)
             info['windows'] += len(placed)
+            fe_rng = None
             if not blank:
+                mb.tag = 'shopfront'
                 _ground_extras(plan, M, side, fr, Wf, spec, zs, rng, detail, ti)
                 if side not in fe_done and ti == 0 and plan.get('fire_escape', 0) > 0 and side in fe_sides and n_vert >= 3:
                     if rng.random() < plan['fire_escape']:
-                        _fire_escape(fr, mb, spec, zs, f1, rng, detail)
+                        mb.tag = 'fire_escape'
+                        fe_rng = _fire_escape(fr, mb, spec, zs, f1, rng, detail, plan, side)
                     fe_done.add(side)
+                avoid = pier_spans(spec)
+                og = _oriel_span(spec, plan) if (side == 'front' and ti == 0) else None
+                if og:
+                    avoid = avoid + [(og[0] - 0.1, og[1] + 0.1)]
+                brk = []
                 if plan.get('brackets') and plan.get('cornice') in ('big', 'brick') and (has_parapet or roof != 'flat'):
+                    mb.tag = 'bracket'
                     gap = _oriel_span(spec, plan) if (side == 'front' and ti == 0) else None
-                    _brackets(fr, Wf, z_crown - CORNICES[plan['cornice']][-1][1], plan['cornice'], M, detail, gap)
+                    brk = _brackets(fr, Wf, z_crown - CORNICES[plan['cornice']][-1][1] + (0.0 if has_parapet else 0.3), plan['cornice'], M, detail, gap, avoid)
                 if plan.get('cornice') == 'big' and detail >= 2 and (has_parapet or roof != 'flat'):
-                    _dentils(fr, Wf, z_crown - CORNICES['big'][-1][1], M['cornice'])
+                    mb.tag = 'dentil'
+                    _dentils(fr, Wf, z_crown - CORNICES['big'][-1][1] + (0.0 if has_parapet else 0.3), M['cornice'], avoid + brk)
                 if plan.get('quoins'):
+                    mb.tag = 'quoin'
                     e0, e1 = ends[side]
                     _quoins(fr, Wf, zs[1] if plan['ground'] in ('store', 'glass') else 0.0, zs[f1], M['trim'], not blank_of[e0], not blank_of[e1])
                 if side == 'front' and ti == 0 and plan.get('_oriel') is not None:
-                    _oriel(mb, fr, spec, plan, M, zs, f1, rng, detail)
+                    mb.tag = 'oriel'
+                    prof_o = CORNICES.get(plan.get('cornice', 'simple'))
+                    zt_o = (z_crown - prof_o[-1][1] + (0.0 if has_parapet else 0.3) - 0.05) if prof_o else None
+                    _oriel(mb, fr, spec, plan, M, zs, f1, rng, detail, zt_o)
+                    sp_o = _oriel_span(spec, plan)
+                    if sp_o:
+                        plan['_oriel_span'] = (sp_o[0], sp_o[1])
+            mb.tag = 'wall'
+            if ti == 0 and rng2 is not None:
+                prof_t = CORNICES.get(plan.get('cornice', 'simple'))
+                if prof_t is None and not top_tier:
+                    prof_t = CORNICES['simple']
+                if prof_t is not None:
+                    zc_t = z_crown - prof_t[-1][1] + (0.0 if has_parapet else 0.3)
+                    drop = 0.44 if (plan.get('brackets') and plan.get('cornice') == 'big') else (0.27 if (plan.get('brackets') and plan.get('cornice') == 'brick') else (0.14 if plan.get('cornice') == 'big' else 0.0))
+                    top_v = zc_t - drop - 0.05
+                    proj = max(p_[0] for p_ in prof_t)
+                else:
+                    top_v = z_crown - 0.15
+                    proj = 0.05
+                f_ = SV.Face(side, fr, Wf, spec, placed, not spec.get('bays'), blank, top_v)
+                f_.crown_top = z_crown + 0.12
+                f_.crown_proj = proj
+                if fe_rng:
+                    f_.fe = fe_rng
+                faces.append(f_)
+        nxt = {'front': 'right', 'right': 'back', 'back': 'left', 'left': 'front'}
+        for sd, (fr_, sp_) in decors.items():
+            o = decors.get(nxt[sd])
+            ob = bool(o and o[1].get('bands'))
+            op_ = bool(o and (o[1].get('piers') or {}).get('corners'))
+            decor(fr_, sp_, ob, op_)
         # corniche + couronnement de l'acrotere
         runs, closed = _runs(active)
         prof = CORNICES.get(plan.get('cornice', 'simple'))
@@ -138,13 +187,17 @@ def build(plan, rng, detail=1, party=(False, False), sidewalk=False, yard=0.0):
         if prof is not None:
             ch = prof[-1][1]
             ckey = M['cornice'] if plan.get('cornice') != 'brick' else M['wall']
+            mb.tag = 'cornice'
             for run in runs:
                 sweep(mb, _corner_path(rect, run, z_crown - ch + (0.0 if has_parapet else 0.3)), prof, ckey, closed=closed)
         if has_parapet:
+            mb.tag = 'coping'
             cop = [(0.05, 0), (0.05, 0.12), (-T_WALL - 0.03, 0.12), (-T_WALL - 0.03, 0)]
             loop = _corner_path(rect, list(SIDES), z_crown)[:-1]
             sweep(mb, loop, cop, 'coping', closed=True)
+            mb.tag = 'parapet'
             sweep(mb, [(p[0], p[1], z_top_floor) for p in loop], [(-T_WALL, par), (-T_WALL, 0.0)], M['side'], closed=True)
+            mb.tag = 'roof'
             inner = (x0 + T_WALL, y0 + T_WALL, x1 - T_WALL, y1 - T_WALL)
             if top_tier:
                 mb.face([Vector((inner[0], inner[1], z_top_floor)), Vector((inner[2], inner[1], z_top_floor)),
@@ -157,26 +210,45 @@ def build(plan, rng, detail=1, party=(False, False), sidewalk=False, yard=0.0):
                 roof_rect = None
                 # terrasse du retrait : quelques clims / ventilations
                 if plan.get('roof_props', 1.0) and detail >= 1:
+                    mb.tag = 'roofprop'
                     _terrace_props(mb, inner, up, z_top_floor, rng, detail)
+        mb.tag = 'roof'
         if top_tier:
             info['height'] = z_crown
             if roof == 'mansard':
+                mb.tag = 'mansard'
                 roof_rect, ztop = _mansard(mb, plan, M, rect, zs, n_vert, n, rng, detail, active)
                 mb.mass.append(('mansard', rect, zs[n_vert] + 0.3, plan['floor_h'] + 0.2))
                 info['height'] = ztop
+                mb.tag = 'roofprop'
                 _roof_props(mb, plan, M, roof_rect, ztop, rng, detail, small=not plan.get('mansard_props'))
             elif roof == 'hip':
                 ztop = _hip(mb, M, rect, z_top_floor + 0.3, rng, plan.get('hip_pitch'))
                 mb.mass.append(('hip', rect, z_top_floor + 0.3, ztop))
                 info['height'] = ztop
             else:
+                mb.tag = 'roofprop'
                 _roof_props(mb, plan, M, roof_rect, z_top_floor, rng, detail)
+        mb.tag = 'wall'
     if plan['ground'] == 'stoop':
+        mb.tag = 'stoop'
         _stoop(mb, plan, M, zs, rng, detail)
+    if rng2 is not None:
+        amount = plan.get('decals', 0.6)
+        for f_ in faces:
+            mb.tag = 'service'
+            SV.collect(f_, plan, zs, M)
+            SV.facade_services(mb, f_, plan, zs, M, rng2, detail, amount)
+            SV.garage_tags(mb, f_, rng2, amount)
+        mb.tag = 'wall'
+    plan.pop('_rng2', None)
+    mb.tag = 'ground'
     if sidewalk:
-        _sidewalk(mb, 0.0, W, rng, depth=4.5 + yard)
+        _sidewalk(mb, 0.0, W, rng, depth=4.5 + yard, y1=-yard if yard > 0.1 else 0.0)
     if yard > 0.1:
+        mb.tag = 'yard'
         _yard(mb, plan, W, yard, detail)
+    mb.tag = 'wall'
     return mb, info
 
 
@@ -184,6 +256,52 @@ def build(plan, rng, detail=1, party=(False, False), sidewalk=False, yard=0.0):
 
 
 def _facade_spec(plan, M, side, Wf, zs, f0, f1, z_crown, blank, rng, mansard_above, tier):
+    spec = _facade_spec0(plan, M, side, Wf, zs, f0, f1, z_crown, blank, rng, mansard_above, tier)
+    spec['defer'] = True
+    if not spec['bays']:
+        return spec
+    n_t = len(plan.get('tiers') or [0])
+    top = tier == n_t - 1
+    has_par = not (top and plan.get('roof', 'flat') in ('mansard', 'hip'))
+    prof = CORNICES.get(plan.get('cornice', 'simple'))
+    if prof is None and not top:
+        prof = CORNICES['simple']
+    clear = [(b[0], b[0] + b[1]) for b in spec['bands']]
+    if prof is not None:
+        zc = z_crown - prof[-1][1] + (0.0 if has_par else 0.3)
+        drop = 0.0
+        if plan.get('brackets') and plan.get('cornice') in ('big', 'brick'):
+            drop = 0.44 if plan['cornice'] == 'big' else 0.27
+        elif plan.get('cornice') == 'big':
+            drop = 0.14
+        clear.append((zc - drop, 1e9))
+        pp = spec.get('piers')
+        if pp and not pp.get('base_only') and pp['v1'] > zc:
+            pp['v1'] = zc                     # le pilastre porte la corniche au lieu de la traverser
+    spec['clear'] = clear
+    gaps = []
+    if side == 'front' and tier == 0 and plan['ground'] == 'stoop':
+        u0, u1 = _stoop_span(plan)
+        gaps.append((u0 - 0.3, u1 + 0.3, zs[1] + 1.6))
+    if side == 'front' and tier == 0 and plan.get('_oriel') is not None:
+        so = _oriel_span(spec, plan)
+        if so:
+            gaps.append((so[0] - 0.02, so[1] + 0.02, 1e9))      # le bandeau s'arrete contre le bow-window
+    if gaps:
+        spec['band_gaps'] = gaps
+    return spec
+
+
+def _stoop_span(plan):
+    W = plan['W']
+    m = min(plan['margin'], W * 0.2)
+    nb = max(1, int(round((W - 2 * m) / plan['bay_w'])))
+    bw = (W - 2 * m) / nb
+    b = plan.get('_door_bay', 0)
+    return m + b * bw + 0.05 - 0.22, m + (b + 1) * bw - 0.05 + 0.22
+
+
+def _facade_spec0(plan, M, side, Wf, zs, f0, f1, z_crown, blank, rng, mansard_above, tier):
     margin = min(plan['margin'], Wf * 0.2)
     bay = plan['bay_w']
     side_win = side in ('front', 'back') or rng.random() < plan.get('side_windows', 0.5) or tier > 0
@@ -293,7 +411,7 @@ def _ground_bays(plan, M, side, nb, Wf, margin, gh, rng):
                 out.append(dict(door))
             elif rng.random() < 0.5:
                 out.append(dict(w=bw - 1.0, h=min(3.6, gh - 0.8), sill_h=0.0, shape='rect', frame='garage', door_key='metal_grey',
-                                depth=0.35, lintel='flat', sill=False, trim=M['trim'], frame_key=M['frame'], pier_min=0.3))
+                                depth=0.35, lintel='none', sill=False, trim=M['trim'], frame_key=M['frame'], pier_min=0.3))
             else:
                 out.append(dict(plan['win_typ'], frame_key=M['frame'], trim=M['trim'], sill_h=1.0, h=min(plan['win_typ']['h'] + 0.4, gh - 1.4)))
     elif g == 'stoop':
@@ -316,9 +434,12 @@ def _ground_extras(plan, M, side, fr, Wf, spec, zs, rng, detail, tier):
     gh = zs[1]
     m = spec['margin']
     if g == 'store':
-        # bandeau d'enseigne et pilastres de devanture
-        fr.box(m * 0.5, Wf - m * 0.5, gh - 0.72, gh - 0.12, 0.0, 0.14, M['sign'], skip=('back',))
-        fr.box(m * 0.5 - 0.04, Wf - m * 0.5 + 0.04, gh - 0.12, gh + 0.02, 0.0, 0.2, M['trim'], skip=('back',))
+        # bandeau d'enseigne et pilastres de devanture (profondeurs distinctes de celles des bandeaux)
+        bds = [b[2] for b in spec.get('bands', []) if b[0] < gh + 0.05 and b[0] + b[1] > gh - 0.75]
+        sd = 0.14 if all(abs(x - 0.14) > 0.015 for x in bds) else 0.1
+        td = 0.2 if all(abs(x - 0.2) > 0.015 for x in bds) else 0.23
+        fr.box(m * 0.5, Wf - m * 0.5, gh - 0.72, gh - 0.12, 0.0, sd, M['sign'], skip=('back',))
+        fr.box(m * 0.5 - 0.04, Wf - m * 0.5 + 0.04, gh - 0.12, gh + 0.02, 0.0, td, M['trim'], skip=('back',))
         nb = spec['bays']
         bw = (Wf - 2 * m) / nb
         for b in range(nb + 1):
@@ -330,11 +451,12 @@ def _ground_extras(plan, M, side, fr, Wf, spec, zs, rng, detail, tier):
                     continue
                 u0 = m + b * bw + 0.15; u1 = u0 + bw - 0.3
                 _awning(fr, u0, u1, gh - 0.8, M['awning'])
+                plan['_awn'] = True
     elif g == 'lobby' and detail >= 1:
         # marquise au-dessus de l'entree
         nb = spec['bays']; bw = (Wf - 2 * m) / nb; c = nb // 2
         u0, u1 = m + c * bw - 0.2, m + (c + 1) * bw + 0.2
-        fr.box(u0, u1, gh - 0.55, gh - 0.4, 0.0, 1.6, 'metal_dark', skip=('back',))
+        fr.box(u0, u1, gh - 0.53, gh - 0.38, 0.0, 1.6, 'metal_dark', skip=('back',))
     elif g == 'warehouse':
         # quai de chargement sous les rideaux
         nb = spec['bays']; bw = (Wf - 2 * m) / nb
@@ -354,9 +476,10 @@ def _awning(fr, u0, u1, v, key):
     fr.face([(u1, v - drop, 0.0), (u1, v - drop - 0.25, dep), (u1, v - drop, dep), (u1, v, 0.0)], key)
 
 
-def _brackets(fr, Wf, zc, kind, M, detail, gap=None):
+def _brackets(fr, Wf, zc, kind, M, detail, gap=None, avoid=()):
+    out = []
     if detail < 1:
-        return
+        return out
     step = 0.85 if kind == 'big' else 0.5
     n = max(2, int(Wf / step))
     key = M['cornice'] if kind == 'big' else M['wall']
@@ -364,15 +487,19 @@ def _brackets(fr, Wf, zc, kind, M, detail, gap=None):
         u = 0.12 + (Wf - 0.24) * k / n
         if gap and gap[0] - 0.1 < u < gap[1] + 0.1:
             continue
+        if any(u + 0.09 > a and u - 0.09 < b for a, b in avoid):
+            continue
+        out.append((u - 0.07, u + 0.07))
         if kind == 'big':
             fr.box(u - 0.07, u + 0.07, zc - 0.42, zc + 0.02, 0.0, 0.16, key)
             fr.box(u - 0.07, u + 0.07, zc - 0.14, zc + 0.02, 0.16, 0.42, key)
             fr.box(u - 0.06, u + 0.06, zc - 0.42, zc - 0.32, 0.16, 0.22, key)
         else:
             fr.box(u - 0.1, u + 0.1, zc - 0.25, zc, 0.0, 0.06, key)
+    return out
 
 
-def _fire_escape(fr, mb, spec, zs, f1, rng, detail):
+def _fire_escape(fr, mb, spec, zs, f1, rng, detail, plan=None, side='front'):
     nb = spec['bays']
     if nb < 1:
         return
@@ -385,7 +512,21 @@ def _fire_escape(fr, mb, spec, zs, f1, rng, detail):
     if u1 - u0 < 2.6:
         u1 = min(Wf - 0.1, u0 + 2.8)
     levels = [zs[i] - 0.02 for i in range(1, f1)]
-    PR.fire_escape(fr, mb, u0, u1, levels, 0.0, detail, 'fire_escape')
+    # ecart au mur : devant pilastres, bandeaux, linteaux et clefs, enseigne de la devanture
+    w0 = 0.09
+    pp = spec.get('piers')
+    if pp and pp['v1'] > zs[1] + 0.1:
+        w0 = max(w0, pp['d'] + 0.04)
+    for b in spec.get('bands', []):
+        bd = b[2] if not (pp and abs(b[2] - pp['d']) < 0.02) else pp['d'] + 0.04
+        w0 = max(w0, bd + 0.03)
+    plan = plan or {}
+    store = side == 'front' and plan.get('ground') == 'store'
+    if store:
+        w0 = max(w0, 0.26)
+    ladder_min = zs[1] - 0.72 if (store and plan.get('_awn')) else None
+    vb = PR.fire_escape(fr, mb, u0, u1, levels, 0.0, detail, 'fire_escape', w0=w0, hang_first=store, ladder_min=ladder_min)
+    return (u0, u1, vb if vb is not None else 0.0)
 
 
 # ---------------------------------------------------------------- toits
@@ -405,11 +546,13 @@ def _roof_props(mb, plan, M, rect, z, rng, detail, small=False):
         bx = rng.uniform(x0 + 0.6, x1 - bw - 0.6)
         by = rng.uniform(y0 + D * 0.3, y1 - bd - 0.6)
         h = rng.uniform(2.6, 3.4) * (1.4 if plan['floors'] > 12 else 1.0)
+        mb.tag = 'bulkhead'
         PR.bulkhead(mb, bx, by, bx + bw, by + bd, z, h, M['wall'], rng, detail)
+        mb.tag = 'roofprop'
         disks.append((bx + bw / 2, by + bd / 2, max(bw, bd) * 0.6))
         if rng.random() < plan.get('water_tower', 0.0) and bw > 2.5:
-            PR.water_tower(mb, bx + bw / 2, by + bd / 2, z + h + 0.15, rng, detail)
-            mb.box((bx - 0.1, by - 0.1, z + h), (bx + bw + 0.1, by + bd + 0.1, z + h + 0.15), 'metal_dark')
+            PR.water_tower(mb, bx + bw / 2, by + bd / 2, z + h + 0.3, rng, detail)
+            mb.box((bx - 0.12, by - 0.12, z + h + 0.15), (bx + bw + 0.12, by + bd + 0.12, z + h + 0.3), 'metal_dark')
         if rng.random() < plan.get('antenna', 0.0):
             PR.antenna(mb, bx + 0.4, by + bd - 0.4, z + h + 0.15, rng, h=rng.uniform(5, 12) if plan['floors'] > 15 else None)
     elif rng.random() < plan.get('water_tower', 0.0) * 0.6 and W > 5 and D > 5 and (not small or plan.get('mansard_props')):
@@ -422,7 +565,12 @@ def _roof_props(mb, plan, M, rect, z, rng, detail, small=False):
         items.append(lambda mb_, x, y, zz, r: PR.skylight(mb_, x, y, zz, r))
     for _ in range(plan.get('chimneys', 0)):
         items.append(lambda mb_, x, y, zz, r: PR.chimney(mb_, x, y, zz, r, M['wall']))
-    PR.scatter_roof(mb, (x0 + 0.5, y0 + 0.5, x1 - 0.5, y1 - 0.5), z, rng, items, disks, detail)
+    disks = PR.scatter_roof(mb, (x0 + 0.5, y0 + 0.5, x1 - 0.5, y1 - 0.5), z, rng, items, disks, detail)
+    rng2 = plan.get('_rng2')
+    if rng2 is not None:
+        more = SV.roof_items(plan, rng2, detail)
+        if more:
+            PR.scatter_roof(mb, (x0 + 0.5, y0 + 0.5, x1 - 0.5, y1 - 0.5), z, rng2, more, disks, detail)
 
 
 def _terrace_props(mb, outer, inner, z, rng, detail):
@@ -526,9 +674,9 @@ def _stoop(mb, plan, M, zs, rng, detail):
     ns = int(math.ceil(H / rise))
     rise = H / ns
     stone = M['base'] if M['base'].startswith('stone') else ('stone_brown' if M['wall'] == 'stone_brown' else M['trim'])
-    fr.box(u0, u1, 0.0, H, 0.0, land, stone, skip=('back',))
+    fr.box(u0, u1, 0.0, H, 0.0, land, stone, skip=('back', 'left', 'right', 'bottom'))
     for k in range(1, ns):
-        fr.box(u0, u1, 0.0, H - k * rise, land + (k - 1) * run, land + k * run, stone, skip=('back',))
+        fr.box(u0, u1, 0.0, H - k * rise, land + (k - 1) * run, land + k * run, stone, skip=('back', 'left', 'right', 'bottom'))
     L = land + (ns - 1) * run
     # joues et rampe en fonte
     for uu in (u0 - 0.22, u1):
@@ -550,8 +698,8 @@ def _stoop(mb, plan, M, zs, rng, detail):
                 mb.beam(fr.P(c, vb, w), fr.P(c, vb + 0.9, w), 0.025, 'metal_dark')
 
 
-def _sidewalk(mb, x0, x1, rng, depth=4.5):
-    mb.box((x0, -depth, -0.18), (x1, 0.0, 0.0), 'sidewalk', skip=('+y',))
+def _sidewalk(mb, x0, x1, rng, depth=4.5, y1=0.0):
+    mb.box((x0, -depth, -0.18), (x1, y1, 0.0), 'sidewalk', skip=('+y',))
     mb.box((x0, -depth - 0.25, -0.2), (x1, -depth, 0.0), 'curb', skip=('+y',))
 
 
@@ -570,10 +718,11 @@ def _quoins(fr, Wf, v0, v1, key, left=True, right=True):
         k += 1
 
 
-def _dentils(fr, Wf, zc, key):
+def _dentils(fr, Wf, zc, key, avoid=()):
     u = 0.1
     while u < Wf - 0.1:
-        fr.box(u, u + 0.07, zc - 0.13, zc, 0.0, 0.1, key)
+        if not any(u + 0.09 > a and u - 0.02 < b for a, b in avoid):
+            fr.box(u, u + 0.07, zc - 0.13, zc, 0.0, 0.1, key)
         u += 0.15
 
 
@@ -591,11 +740,14 @@ def _oriel_span(spec, plan):
         b = (b + 1) % nb
     uc = m + (b + 0.5) * bw
     wb = min(bw + 0.4, 3.4)
+    if plan['ground'] == 'stoop' and abs(b - plan.get('_door_bay', 0)) == 1:
+        wb = min(wb, max(1.4, bw - 0.6))          # laisse passer la joue du perron voisin
     return (uc - wb / 2, uc + wb / 2, uc, wb)
 
 
-def _oriel(mb, fr, spec, plan, M, zs, f1, rng, detail):
-    """Bow-window a pans coupes sur une travee, du premier etage au dernier."""
+def _oriel(mb, fr, spec, plan, M, zs, f1, rng, detail, ztop=None):
+    """Bow-window a pans coupes sur une travee, du premier etage au dernier (arrete sous la corniche : ztop)."""
+    ztop = zs[f1] if ztop is None else min(zs[f1], ztop)
     from .geom import Frame as F, sweep as SW
     sp = _oriel_span(spec, plan)
     if sp is None:
@@ -604,7 +756,7 @@ def _oriel(mb, fr, spec, plan, M, zs, f1, rng, detail):
     d = min(0.9, wb * 0.3)
     wf = wb - 2 * d
     v0 = zs[1] + 0.05
-    if zs[f1] - v0 < 2.5:
+    if ztop - v0 < 2.5:
         return
     pts = [(uc - wb / 2, 0.0), (uc - wf / 2, d), (uc + wf / 2, d), (uc + wb / 2, 0.0)]
     win = dict(plan['win_typ'])
@@ -616,23 +768,25 @@ def _oriel(mb, fr, spec, plan, M, zs, f1, rng, detail):
         f2 = F(mb, P0, Pt, 0.0)
         floors = []
         for k in range(1, f1):
+            if zs[k] > ztop - 0.3:
+                break
             o = dict(win, w=min(win['w'], L - 0.36), frame_key=M['frame'], trim=M['trim'], pier_min=0.1, ac=0.0)
-            floors.append(dict(v0=zs[k], h=zs[k + 1] - zs[k], wall=M['wall'], bays=[o]))
+            floors.append(dict(v0=zs[k], h=min(zs[k + 1], ztop) - zs[k], wall=M['wall'], bays=[o]))
         build_facade(f2, dict(W=L, margin=0.12, bays=1, floors=floors, bands=[], piers=None), rng, detail)
     # encorbellement (sous-face) et toit
-    base = [fr.P(u, v0 - 0.5, w * 0.3) for u, w in pts]
+    base = [fr.P(u, v0 - 0.48, w * 0.3) for u, w in pts]
     top = [fr.P(u, v0, w) for u, w in pts]
     for i in range(3):
         mb.face([base[i], base[i + 1], top[i + 1], top[i]], M['trim'])
     mb.face([base[3], base[2], base[1], base[0]], M['trim'])
-    mb.face([fr.P(u, zs[f1], w) for u, w in reversed(pts)][::-1], M['roof'])
-    sw = [fr.P(u, zs[f1] - 0.3, w) for u, w in pts]
+    mb.face([fr.P(u, ztop, w) for u, w in reversed(pts)][::-1], M['roof'])
+    sw = [fr.P(u, ztop - 0.3, w) for u, w in pts]
     SW(mb, [(p.x, p.y, p.z) for p in sw], [(0, 0), (0.12, 0), (0.18, 0.18), (0.18, 0.3), (0, 0.3)], M['cornice'], closed=False)
 
 
 def _yard(mb, plan, W, yard, detail):
     """Courette devant une maison reculee : sol pave et grille basse, ouverte au droit du perron."""
-    mb.box((0.0, -yard, -0.18), (W, 0.0, 0.0), 'sidewalk', skip=('+y',))
+    mb.box((0.0, -yard, -0.18), (W, 0.0, 0.0), 'sidewalk', skip=('+y', '-y'))
     if detail < 1:
         return
     m = min(plan['margin'], W * 0.2)

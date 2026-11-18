@@ -331,7 +331,8 @@ def bake(context, params, mat_mode='procedural', kb_dir="", density=12.0, max_re
     # 1. detaille (meme tirage que build_mesh) + volumes notes
     rng = LY._rng(p)
     plan = LY._plan(p, rng)
-    mb_hi, info = BD.build(plan, rng, detail=detail, party=(False, False), sidewalk=False, yard=0.0)
+    mb_hi, info = BD.build(plan, rng, detail=detail, party=(False, False), sidewalk=False, yard=0.0, rng2=LY._rng2(p))
+    mb_hi.drop({'decal'})          # decalques transparents : non cuits (la cuisson ne gere pas leur transparence)
     me_hi = mb_hi.to_mesh(nm + "_detail", lambda k: MT.get(k, mat_mode, kb_dir))
     hi = bpy.data.objects.new(nm + "_detail", me_hi)
     tris_hi = sum(len(f.vertices) - 2 for f in me_hi.polygons)

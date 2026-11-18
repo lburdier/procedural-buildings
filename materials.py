@@ -6,7 +6,10 @@ Variation par batiment : chaque materiau decale legerement teinte et valeur avec
 import os
 import bpy
 
+from . import wear as WR
+
 PREFIX = "BG_"
+MAT_VER = 2               # v1.5 : usure (les materiaux plus anciens d'une scene sont reconstruits sur place)
 KB_TILE = 3.6576          # 12 pieds : tuile des textures Brooklyn (mesuree sur le kit)
 KB_TILE_GLASS = 8.0
 
@@ -28,6 +31,25 @@ KB_MAP = {
     'brick_white': ('BrickWallTan', (1.75, 1.78, 1.8)), 'brick_orange': ('BrickWallStandard', (1.35, 1.12, 0.95)),
     'spandrel_dark': ('MetalPaintedBlack', None),
 }
+
+# usure : cle -> (groupe, force, salpetre)
+def wear_of(key):
+    if key in ('glass', 'glass_door'):
+        return ('glass', 1.0, 0.0)
+    if key in ('sidewalk', 'curb', 'asphalt'):
+        return ('ground', 1.0, 0.0)
+    if key in ('roof_flat', 'roof_slate'):
+        return ('ground', 0.6, 0.0)
+    if key.startswith('metal_') or key in ('fire_escape', 'ac_unit', 'spandrel_dark', 'roof_seam_green', 'frame_bronze', 'frame_alu', 'frame_dark'):
+        f = {'frame_alu': 0.25, 'frame_bronze': 0.4, 'frame_dark': 0.35, 'roof_seam_green': 0.6, 'spandrel_dark': 0.4}.get(key, 1.0)
+        return ('metal', f, 0.0)
+    if key.startswith('brick_') or key.startswith('stone_') or key == 'concrete':
+        return ('wall', 1.0, 0.0 if key == 'brick_painted' else 1.0)
+    f = {'wood_tank': 0.7, 'wood_ply': 0.9, 'frame_white': 0.45, 'frame_green': 0.45, 'panel_white': 0.8}.get(key, 0.6)
+    if key.startswith('awning') or key.startswith('sign'):
+        f = 0.5
+    return ('wall', f, 0.0)
+
 
 # cle -> parametres proceduraux
 P = {
@@ -86,21 +108,26 @@ P = {
     'sidewalk': dict(kind='block', c1=(0.44, 0.43, 0.41), c2=(0.40, 0.39, 0.37), mortar=(0.2, 0.2, 0.2), bw=1.52, bh=1.52, joint=0.012, rough=0.85),
     'curb': dict(kind='noise', c1=(0.50, 0.49, 0.47), c2=(0.42, 0.41, 0.40), rough=0.8),
     'asphalt': dict(kind='noise', c1=(0.05, 0.05, 0.052), c2=(0.075, 0.075, 0.078), rough=0.9, scale=12),
+    'wood_ply': dict(kind='noise', c1=(0.2, 0.16, 0.11), c2=(0.13, 0.11, 0.085), rough=0.85, scale=3),
 }
 
 
 def get(key, mode='procedural', kb_dir=""):
     """Materiau pour une cle (cree a la demande, reutilise ensuite)."""
+    if key == 'decal':
+        from . import decals
+        return decals.material()
     if mode == 'kb3d' and kb_dir and key in KB_MAP:
         name = PREFIX + "KB_" + key
         m = bpy.data.materials.get(name)
-        if m is None:
-            m = _kb_material(name, key, kb_dir)
+        if m is None or m.get("bg_mat_ver") != MAT_VER:
+            m2 = _kb_material(name, key, kb_dir)
+            m = m2 or m
         if m is not None:
             return m
     name = PREFIX + key
     m = bpy.data.materials.get(name)
-    if m is None:
+    if m is None or m.get("bg_mat_ver") != MAT_VER:
         m = _procedural(name, P.get(key, dict(kind='flat', c1=(0.5, 0.5, 0.5))))
     return m
 
@@ -113,7 +140,7 @@ def kb_available(kb_dir):
 
 
 def _new(name):
-    m = bpy.data.materials.new(name)
+    m = bpy.data.materials.get(name) or bpy.data.materials.new(name)     # reconstruit sur place : les objets le gardent
     m.use_nodes = True
     nt = m.node_tree
     nt.nodes.clear()
@@ -121,6 +148,7 @@ def _new(name):
     bsdf = nt.nodes.new('ShaderNodeBsdfPrincipled'); bsdf.location = (600, 0)
     nt.links.new(bsdf.outputs[0], out.inputs['Surface'])
     m["bg_material"] = True
+    m["bg_mat_ver"] = MAT_VER
     return m, nt, bsdf
 
 
@@ -221,6 +249,7 @@ def _procedural(name, s):
         _glass(nt, bsdf)
         m.diffuse_color = (0.02, 0.025, 0.03, 1)
         return m
+    key = name[len(PREFIX):]
     uv = _uv(nt)
     col = None
     if kind in ('brick', 'block'):
@@ -304,7 +333,10 @@ def _procedural(name, s):
             _bump(nt, wv.outputs['Fac'], bsdf, strength=0.3, dist=0.01)
     if kind != 'flat':
         col = _rand_tint(nt, col, x=350, y=250)
-    nt.links.new(col, bsdf.inputs['Base Color'])
+    rin = bsdf.inputs['Roughness']
+    rough = rin.links[0].from_socket if rin.is_linked else rin.default_value
+    wk, wf, ws = wear_of(key)
+    WR.apply(nt, bsdf, col, rough, wk, force=wf, metal=s.get('metal', 0.0), salpetre=ws)
     m.diffuse_color = c1
     return m
 
@@ -325,6 +357,7 @@ def _glass(nt, bsdf):
     rr.inputs['To Min'].default_value = 0.03; rr.inputs['To Max'].default_value = 0.14
     nt.links.new(at.outputs['Fac'], rr.inputs['Value'])
     nt.links.new(rr.outputs[0], bsdf.inputs['Roughness'])
+    WR.apply(nt, bsdf, ramp.outputs['Color'], rr.outputs[0], 'glass')
     bsdf.inputs['Metallic'].default_value = 0.0
     try:
         bsdf.inputs['Specular IOR Level'].default_value = 0.8
@@ -377,13 +410,12 @@ def _kb_material(name, key, kb_dir):
         col = R
     if key != 'glass':
         col = _rand_tint(nt, col, x=250, y=300, hue=0.015, val=0.12, sat=0.1)
-    nt.links.new(col, bsdf.inputs['Base Color'])
     r = img("roughness", -800, 0)
-    if r:
-        nt.links.new(r.outputs['Color'], bsdf.inputs['Roughness'])
     mt = img("metallic", -800, -250)
     if mt:
         nt.links.new(mt.outputs['Color'], bsdf.inputs['Metallic'])
+    wk, wf, ws = wear_of(key)
+    WR.apply(nt, bsdf, col, r.outputs['Color'] if r else 0.6, wk, force=wf * 0.8, metal=mt.outputs['Color'] if mt else None, salpetre=ws)
     nm = img("normal", -800, -500)
     if nm:
         nmap = _n(nt, 'ShaderNodeNormalMap', -400, -500)

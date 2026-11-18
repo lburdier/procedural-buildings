@@ -143,7 +143,7 @@ def scatter_roof(mb, rect, z, rng, items, blocked=(), detail=1):
                 ok_x = x0 - 0.01 <= x - r * 0.6 and x + r * 0.6 <= x1 + 0.01 and y0 - 0.01 <= y - r * 0.6 and y + r * 0.6 <= y1 + 0.01
                 if not ok_x:
                     # on retire ce qui vient d'etre ajoute
-                    del mb.faces[tmp_len:]; del mb.uvs[tmp_len:]; del mb.mats[tmp_len:]; del mb.rand[tmp_len:]
+                    del mb.faces[tmp_len:]; del mb.uvs[tmp_len:]; del mb.mats[tmp_len:]; del mb.rand[tmp_len:]; del mb.tags[tmp_len:]
                     del mb.verts[tmp_v:]; del mb.mass[tmp_m:]
                     continue
                 disks.append((x, y, r))
@@ -151,8 +151,13 @@ def scatter_roof(mb, rect, z, rng, items, blocked=(), detail=1):
     return disks
 
 
-def fire_escape(fr, mb, u0, u1, levels, ground_v, detail=1, key='fire_escape'):
-    """Escalier de secours accroche a une facade (repere fr), de u0 a u1, paliers aux hauteurs levels."""
+def fire_escape(fr, mb, u0, u1, levels, ground_v, detail=1, key='fire_escape', w0=0.0, hang_first=False, ladder_min=None):
+    """Escalier de secours accroche a une facade (repere fr), de u0 a u1, paliers aux hauteurs levels.
+    w0 : ecart au mur (devant pilastres, bandeaux, linteaux) ; hang_first : le premier palier est suspendu par des
+    tirants montant au mur (au-dessus d'une devanture) ; ladder_min : bas de l'echelle (au-dessus des auvents)."""
+    from .geom import Frame
+    wall = fr
+    fr = Frame(mb, wall.P(0.0, 0.0, w0), wall.T, wall.u0)
     dpt = 1.15
     t = 0.05
     rail_h = 1.0
@@ -163,7 +168,12 @@ def fire_escape(fr, mb, u0, u1, levels, ground_v, detail=1, key='fire_escape'):
         if detail >= 1:
             fr.box(u0, u1, v - 0.14, v - 0.06, dpt - 0.06, dpt, key, skip=('back',))
             for uu in (u0 + 0.05, u1 - 0.1):
-                mb.beam(fr.P(uu, v - 0.1, dpt - 0.05), fr.P(uu, v - 0.9, 0.02), 0.05, key)     # console
+                if i == 0 and hang_first:
+                    mb.beam(fr.P(uu, v - 0.03, dpt - 0.05), wall.P(uu, v + 1.3, 0.02), 0.035, key)   # tirant
+                else:
+                    mb.beam(fr.P(uu, v - 0.1, dpt - 0.05), wall.P(uu, v - 0.9, 0.02), 0.05, key)     # console
+                if w0 > 0.02 and not (i == 0 and hang_first):
+                    mb.beam(wall.P(uu, v - 0.097, -0.02), fr.P(uu, v - 0.097, 0.05), 0.055, key)    # patte de fixation
         # garde-corps
         fr.box(u0, u1, v + rail_h - t, v + rail_h, dpt - t, dpt, key, skip=())
         fr.box(u0, u1, v + rail_h * 0.5 - t / 2, v + rail_h * 0.5 + t / 2, dpt - t * 0.6, dpt, key, skip=())
@@ -195,12 +205,45 @@ def fire_escape(fr, mb, u0, u1, levels, ground_v, detail=1, key='fire_escape'):
                     fr.box(uu - 0.12, uu + 0.12, vv - 0.03, vv, dpt * 0.35, dpt * 0.92, key, skip=())
                 mb.beam(fr.P(top_u, v + rail_h * 0.9, dpt * 0.92), fr.P(bot_u, vb + rail_h * 0.9, dpt * 0.92), 0.04, key)
     # echelle escamotable sous le premier palier
+    vb = None
     if levels:
         v = levels[0]
         lu = u1 - 0.7
-        vb = max(ground_v + 2.4, v - 3.2)
+        vb = max(ground_v + 2.4, v - 3.2, ladder_min if ladder_min is not None else -1e9)
+        vb = min(vb, v - 0.6)
         for uu in (lu - 0.22, lu + 0.22):
             fr.box(uu - 0.02, uu + 0.02, vb, v, dpt - 0.25, dpt - 0.2, key, skip=())
         for k in range(int((v - vb) / 0.3)):
             vv = vb + 0.15 + k * 0.3
             fr.box(lu - 0.22, lu + 0.22, vv, vv + 0.025, dpt - 0.25, dpt - 0.2, key, skip=())
+    return vb
+
+
+def stack(mb, x, y, z, rng, detail=1):
+    """Colonne de ventilation de plomberie (tube et solin)."""
+    r = rng.uniform(0.04, 0.07)
+    h = rng.uniform(0.45, 1.0)
+    mb.cylinder((x, y), r * 2.4, z, z + 0.05, 'roof_flat', n=8)
+    mb.cylinder((x, y), r, z + 0.05, z + h, 'metal_dark' if rng.random() < 0.6 else 'metal_galv', n=8 if detail >= 1 else 6, cap_top=True)
+    return r * 2.4 + 0.15
+
+
+def duct_run(mb, x, y, z, rng, detail=1):
+    """Gaine rectangulaire posee sur des traverses, coudee dans la toiture aux deux bouts."""
+    L = rng.uniform(2.0, 4.5)
+    s = rng.uniform(0.3, 0.45)
+    along_x = rng.random() < 0.5
+    h0 = 0.28
+    def B(a0, a1, b0, b1, z0, z1, key):
+        if along_x:
+            mb.box((x + a0, y + b0, z0), (x + a1, y + b1, z1), key)
+        else:
+            mb.box((x + b0, y + a0, z0), (x + b1, y + a1, z1), key)
+    B(-L / 2, L / 2, -s / 2, s / 2, z + h0, z + h0 + s, 'metal_galv')
+    for e in (-L / 2, L / 2 - s):
+        B(e, e + s, -s / 2, s / 2, z, z + h0, 'metal_galv')                  # coudes vers le toit
+    k = max(1, int(L / 1.4))
+    for i in range(1, k):
+        a = -L / 2 + L * i / k
+        B(a - 0.05, a + 0.05, -s / 2 - 0.12, s / 2 + 0.12, z, z + h0, 'metal_dark')   # traverses
+    return (L / 2 + 0.35) / 0.6                      # scatter_roof verifie l'emprise avec 0,6 x rayon

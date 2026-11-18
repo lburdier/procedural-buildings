@@ -39,6 +39,12 @@ def _rng(p):
     return random.Random(p['seed'] * 7919 + off)
 
 
+def _rng2(p):
+    """Generateur des equipements et decalcomanies (independant du tirage du batiment)."""
+    off = 100 + PS.KEYS.index(p['preset']) if p.get('preset') else ST.STYLE_KEYS.index(p['style'])
+    return random.Random(p['seed'] * 104729 + off * 31 + 5)
+
+
 def _plan(p, rng):
     o = dict(p.get('opts', {}))
     return PS.make(p['preset'], rng, o) if p.get('preset') else ST.make_plan(p['style'], rng, o)
@@ -63,7 +69,7 @@ def build_mesh(params, mat_mode='procedural', kb_dir="", mesh=None, name="Batime
     plan = _plan(params, rng)
     yard = plan.get('setback', 0.0) if (params.get('yard') or params.get('sidewalk')) else 0.0
     mb, info = BD.build(plan, rng, detail=params.get('detail', 1), party=tuple(params.get('party', (False, False))),
-                        sidewalk=params.get('sidewalk', False), yard=yard)
+                        sidewalk=params.get('sidewalk', False), yard=yard, rng2=_rng2(params))
     me = mb.to_mesh(name, lambda k: MT.get(k, mat_mode, kb_dir), mesh=mesh)
     info.update(W=plan['W'], D=plan['D'], style=params['style'], preset=params.get('preset') or "", tris=sum(len(p.vertices) - 2 for p in me.polygons))
     return me, info

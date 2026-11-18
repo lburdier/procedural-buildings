@@ -75,6 +75,13 @@ def apply_opts(p, opts):
         p['mat']['wall'] = opts['wall']
     if opts.get('storefront') is False and p.get('ground') == 'store':
         p['ground'] = 'base'
+    if p.get('ground') == 'stoop':
+        # perron : rez-de-chaussee sureleve d'une demi-hauteur et facade reculee derriere une courette,
+        # sinon les marches traversent tout le trottoir (v1.5)
+        p['ground_h'] = min(p.get('ground_h', 2.5), 2.6)
+        p['setback'] = max(p.get('setback', 0.0), 3.0)
+    p['services'] = opts.get('services', True) is not False
+    p['decals'] = float(opts.get('decals', 0.6))
     return p
 
 

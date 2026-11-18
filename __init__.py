@@ -12,6 +12,8 @@ from . import layout as LY
 from . import materials as MT
 from . import fond as FD
 from . import updater as UP
+from . import wear as WR
+from . import catalog as CT
 
 WALLS = [('AUTO', "Auto", "")] + [(k, n, "") for k, n in (
     ('brick_red', "Brique rouge"), ('brick_deep', "Brique rouge sombre"), ('brick_dark', "Brique sombre"), ('brick_tan', "Brique beige"), ('brick_brown', "Brique brune"),
@@ -65,11 +67,17 @@ def _opts(s):
     o['storefront'] = s.storefront
     o['awnings'] = s.awnings
     o['win_ac'] = s.win_ac
+    o['services'] = s.services
+    o['decals'] = s.decals
     return o
 
 
 def _upd_lit(self, context):
     MT.set_lit_windows(self.lit_strength, 1.0 - self.lit_ratio)
+
+
+def _upd_wear(self, context):
+    WR.set_amount(self.wear)
 
 
 def draw_update_box(layout, compact=False):
@@ -197,6 +205,14 @@ class BG_Settings(bpy.types.PropertyGroup):
     scale: FloatProperty(name="Échelle (u/m)", default=1.0, min=0.01, max=100.0, description="Unités de la scène par mètre")
     lit_strength: FloatProperty(name="Fenêtres allumées", default=0.0, min=0.0, max=50.0, update=_upd_lit)
     lit_ratio: FloatProperty(name="Part allumée", default=0.2, min=0.0, max=1.0, subtype='FACTOR', update=_upd_lit)
+    # usure et details (v1.5)
+    wear: FloatProperty(name="Usure", default=WR.DEFAULT, min=0.0, max=1.0, subtype='FACTOR', update=_upd_wear,
+                        description="Salissure, coulures, crasse des recoins, salpêtre, rouille, taches au sol, rugosité variable (tous les bâtiments)")
+    decals: FloatProperty(name="Tags et affiches", default=0.6, min=0.0, max=1.0, subtype='FACTOR',
+                          description="Densité des décalcomanies : tags, affiches, coulures sous les appuis, fissures, vieilles publicités peintes")
+    services: BoolProperty(name="Tuyaux et ventilations", default=True,
+                           description="Descentes d'eau pluviale, grilles et gaines de ventilation, compteurs, gaines d'extraction, colonnes de toit")
+    cat_seeds: IntProperty(name="Variantes par preset", default=2, min=1, max=4)
     # fond de decor (versions cuites)
     fond_district: EnumProperty(name="Quartier", items=DISTRICTS, default='mixte')
     fond_count: IntProperty(name="Bâtiments uniques", default=32, min=1, max=200, description="Taille de la bibliothèque (chacun est cuit une fois)")
@@ -596,6 +612,10 @@ class BG_PT_materials(bpy.types.Panel):
             col.label(text="Textures trouvées" if mode == 'kb3d' else "Textures introuvables : matériaux procéduraux", icon='CHECKMARK' if mode == 'kb3d' else 'ERROR')
         col.operator("bg.swap_materials", icon='MATERIAL')
         col.separator()
+        col.prop(s, "wear", slider=True)
+        col.prop(s, "decals", slider=True)
+        col.prop(s, "services", toggle=True)
+        col.separator()
         col.prop(s, "lit_strength"); col.prop(s, "lit_ratio")
         col.prop(s, "scale")
 
@@ -642,6 +662,119 @@ class BG_PT_fond(bpy.types.Panel):
             L.label(text="Fond : %d tris (détaillé %d), %d px, %.0f px/m" % (i['tris'], i['tris_detail'], i['res'], i['px_m']))
 
 
+def _kb_cfg(context):
+    s = context.scene.bg_settings
+    mode, kb = _mat_args(context)
+    return dict(detail=int(s.detail), mat_mode=mode, kb_dir=kb, seeds=s.cat_seeds, wear=s.wear, decals=s.decals)
+
+
+class BG_OT_catalog_build(bpy.types.Operator):
+    """Construit en arrière-plan le catalogue des bâtiments prêts à glisser-déposer (tous les presets et styles, avec vignettes) et le déclare comme bibliothèque d'assets"""
+    bl_idname = "bg.catalog_build"
+    bl_label = "Construire le catalogue"
+
+    def execute(self, context):
+        msg = CT.start(_kb_cfg(context))
+        if msg:
+            self.report({'WARNING'}, msg)
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Construction du catalogue lancée en arrière-plan (environ 2 à 4 minutes)")
+        return {'FINISHED'}
+
+
+class BG_OT_catalog_cancel(bpy.types.Operator):
+    """Arrête la construction du catalogue"""
+    bl_idname = "bg.catalog_cancel"
+    bl_label = "Annuler"
+
+    def execute(self, context):
+        CT.cancel()
+        return {'FINISHED'}
+
+
+class BG_OT_catalog_register(bpy.types.Operator):
+    """Déclare le dossier du catalogue comme bibliothèque d'assets (Préférences › Fichiers › Bibliothèques d'assets)"""
+    bl_idname = "bg.catalog_register"
+    bl_label = "Déclarer la bibliothèque"
+
+    def execute(self, context):
+        if not CT.built():
+            self.report({'WARNING'}, "Catalogue pas encore construit")
+            return {'CANCELLED'}
+        CT.register_library()
+        return {'FINISHED'}
+
+
+class BG_OT_catalog_open(bpy.types.Operator):
+    """Ouvre l'explorateur d'assets sous la vue 3D, sur la bibliothèque des bâtiments : glisser un bâtiment dans la scène pour le poser"""
+    bl_idname = "bg.catalog_open"
+    bl_label = "Ouvrir l'explorateur d'assets"
+
+    def execute(self, context):
+        lib = CT.library()
+        if lib is None:
+            self.report({'WARNING'}, "Bibliothèque non déclarée")
+            return {'CANCELLED'}
+        area = context.area
+        if area is None or area.type != 'VIEW_3D':
+            area = next((a for a in context.screen.areas if a.type == 'VIEW_3D'), None)
+        if area is None:
+            return {'CANCELLED'}
+        before = set(context.screen.areas)
+        with context.temp_override(area=area):
+            bpy.ops.screen.area_split(direction='HORIZONTAL', factor=0.32)
+        new = [a for a in context.screen.areas if a not in before]
+        if not new:
+            return {'CANCELLED'}
+        na = min(new, key=lambda a: a.y)
+        na.ui_type = 'ASSETS'
+        try:
+            sp = na.spaces.active
+            sp.params.asset_library_reference = lib.name
+        except Exception:
+            pass
+        return {'FINISHED'}
+
+
+class BG_PT_catalog(bpy.types.Panel):
+    bl_label = "Catalogue (glisser-déposer)"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Bâtiments"
+    bl_parent_id = "BG_PT_main"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        s = context.scene.bg_settings
+        L = self.layout
+        st = CT.state
+        col = L.column(align=True)
+        if st["status"] == "running":
+            col.label(text="Construction : %d / %d" % (st["done"], st["total"]), icon='SORTTIME')
+            if st["msg"]:
+                col.label(text=st["msg"])
+            col.operator("bg.catalog_cancel", icon='CANCEL')
+            return
+        built = CT.built()
+        lib = CT.library()
+        col.prop(s, "cat_seeds")
+        col.label(text="Détail et matériaux : réglages du panneau", icon='INFO')
+        col.operator("bg.catalog_build", text="Mettre à jour le catalogue" if built else "Construire le catalogue", icon='ASSET_MANAGER')
+        if st["status"] in ("done", "error") and st["msg"]:
+            for line in _wrap(st["msg"], 44):
+                col.label(text=line, icon='ERROR' if st["status"] == "error" else 'NONE')
+        if built:
+            col = L.column(align=True)
+            if lib is None:
+                col.operator("bg.catalog_register", icon='ADD')
+            else:
+                col.label(text="Bibliothèque « %s » prête" % lib.name, icon='CHECKMARK')
+                col.operator("bg.catalog_open", icon='FILEBROWSER')
+                box = col.box(); box.scale_y = 0.7
+                for line in _wrap("Glisser un bâtiment de l'explorateur d'assets dans la vue 3D. Il reste réglable ici (graine, variantes, matériaux).", 44):
+                    box.label(text=line)
+
+
 class BG_OT_random_seed(bpy.types.Operator):
     bl_idname = "bg.random_seed"
     bl_label = "Graine au hasard"
@@ -666,7 +799,8 @@ def _wrap(t, n):
 
 classes = (BG_Preferences, BG_OT_update_check, BG_OT_update_install, BG_OT_update_page, BG_Settings, BG_OT_generate, BG_OT_variants, BG_OT_street, BG_OT_reseed, BG_OT_apply, BG_OT_load,
            BG_OT_swap_materials, BG_OT_random_seed, BG_OT_fond_selection, BG_OT_fond_library, BG_OT_fond_city,
-           BG_PT_main, BG_PT_shape, BG_PT_street, BG_PT_fond, BG_PT_materials)
+           BG_OT_catalog_build, BG_OT_catalog_cancel, BG_OT_catalog_register, BG_OT_catalog_open,
+           BG_PT_main, BG_PT_shape, BG_PT_street, BG_PT_fond, BG_PT_materials, BG_PT_catalog)
 
 
 def register():
@@ -677,6 +811,7 @@ def register():
 
 
 def unregister():
+    CT.unregister()
     UP.unregister()
     del bpy.types.Scene.bg_settings
     for c in reversed(classes):

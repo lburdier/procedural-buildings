@@ -112,7 +112,7 @@ def window(fr, op, loop, vs, rng, detail=1):
             _muntins(fr, op, kind, vs, fw, wg, wf, fk, detail)
     # appui
     if op.get('sill', True) and kind not in ('door', 'garage', 'storefront'):
-        fr.box(u0 - 0.07, u1 + 0.07, v0 - 0.08, v0 + 0.005, -0.03, 0.07, trim)
+        fr.box(u0 - 0.07, u1 + 0.07, v0 - 0.08, v0 + 0.015, -0.03, 0.07, trim)
     # linteau / arc
     lt = op.get('lintel', 'flat')
     top_room = op.get('top_room', 0.4)
@@ -133,6 +133,7 @@ def window(fr, op, loop, vs, rng, detail=1):
         cx = (u0 + u1) / 2
         aw = min(0.36, W / 2 - 0.05)
         fr.box(cx - aw, cx + aw, v0 + 0.02, v0 + 0.44, -0.3, 0.22, 'ac_unit', skip=())
+        op['_ac'] = True
         if detail >= 2:
             for k in range(5):
                 vv = v0 + 0.08 + k * 0.065
@@ -160,9 +161,10 @@ def _muntins(fr, op, kind, vs, fw, wg, wf, fk, detail):
             vt = v0 + (top - v0) * 0.78                     # imposte
             fr.box(u0, u1, vt - 0.05, vt + 0.05, wg, wf, fk)
             fr.box(u0, u1, v0, v0 + 0.45, wg, wf, op.get('door_key', 'frame_dark'))   # soubassement
+        vb = v0 + 0.45 if kind == 'storefront' else v0
         for c in range(1, cols):
             uc = u0 + (u1 - u0) * c / cols
-            fr.box(uc - bw / 2, uc + bw / 2, v0, top, wg, w1, fk)
+            fr.box(uc - bw / 2, uc + bw / 2, vb, top, wg, w1, fk)
         if kind == 'grid':
             for r in range(1, rows):
                 vr = v0 + (top - v0) * r / rows
@@ -199,7 +201,7 @@ def _arch_band(fr, loop, vs, bw, trim, key_stone=False):
         fr.face([(b[0], b[1], 0), (a[0], a[1], 0), (a[0], a[1], t), (b[0], b[1], t)], trim)
     if key_stone:
         ks = 0.12
-        fr.box(cx - ks, cx + ks, top - 0.05, top + bw + 0.05, 0.0, 0.075, trim)
+        fr.box(cx - ks, cx + ks, top - 0.05, top + bw + 0.02, 0.0, 0.075, trim)
 
 
 def _door(fr, op, loop, vs, d, rng):
@@ -250,6 +252,10 @@ def build_facade(fr, spec, rng, detail=1):
     bw = (W - 2 * m) / n if n > 0 else W
     placed = []
     n_arc = 12 if detail >= 2 else 8
+    spans = pier_spans(spec)
+    pier = spec.get('piers')
+    pv = (pier['v0'], pier['v1']) if pier else None
+    clear = spec.get('clear') or ()
     for fl in spec['floors']:
         v0, h = fl['v0'], fl['h']
         v1 = v0 + h
@@ -283,54 +289,159 @@ def build_facade(fr, spec, rng, detail=1):
                     o['u0'], o['u1'] = cx - ow / 2, cx + ow / 2
                     o['v0'] = v0 + op['sill_h']
                     o['v1'] = min(v1 - op.get('head_min', 0.3), o['v0'] + op['h'])
-                    if o['v1'] - o['v0'] < 0.4:
+                    if o['v1'] - o['v0'] < 0.4 or not _fit(o, spans, pv, clear, v1):
                         cells.append((su0, su0 + sw, None))
                         continue
-                    o['top_room'] = v1 - o['v1']
                     o['wall'] = wall
                     o['floor_v0'] = v0
                     cells.append((su0, su0 + sw, o))
             cells.append((W - m, W, None))
+        floor_ops = [c[2] for c in cells if c[2] is not None]
         for (cu0, cu1, op) in cells:
             if cu1 - cu0 < 1e-5:
                 continue
             if fl.get('rustic') and detail >= 1:
-                _rustic(fr, cu0, cu1, v0, v1, op, wall)
+                fr.mb.tag = 'rustic'
+                _rustic(fr, cu0, cu1, v0, v1, floor_ops, wall, zones=[(b[0], b[0] + b[1]) for b in spec.get('bands', [])])
+            fr.mb.tag = 'wall'
             r = wall_cell(fr, cu0, v0, cu1, v1, wall, op, n_arc)
             if op is not None and r is not None:
                 loop, vs = r
+                fr.mb.tag = 'window'
                 window(fr, op, loop, vs, rng, detail)
+                fr.mb.tag = 'wall'
                 placed.append(op)
-    # pilastres (entre travees, de v_a a v_b)
+    if not spec.get('defer'):
+        decor(fr, spec, True)
+    return placed
+
+
+def pier_spans(spec):
+    """Intervalles (u0, u1) occupes par les pilastres d'une facade."""
     pier = spec.get('piers')
+    n = spec['bays']
+    if not pier or n <= 0:
+        return []
+    W, m = spec['W'], spec['margin']
+    bw = (W - 2 * m) / n
+    pw = pier['w']
+    bs = range(0 if pier.get('edges') else 1, n + 1 if pier.get('edges') else n)
+    out = [(m + b * bw - pw / 2, m + b * bw + pw / 2) for b in bs]
+    if pier.get('corners') and m > 0.05:
+        out += [(0.0, m), (W - m, W)]
+    return out
+
+
+def _fit(o, spans, pv, clear, v_top):
+    """Ajuste une ouverture (et ses appui, linteau, arc) pour qu'elle ne morde ni sur les pilastres, ni sur les
+    bandeaux, ni sous la corniche. Renvoie False si elle ne tient plus."""
+    kind = o.get('frame', 'sash')
+    shape = o.get('shape', 'rect')
+    sill = o.get('sill', True) and kind not in ('door', 'garage', 'storefront')
+    ceil = v_top
+    for z0, z1 in clear:
+        if z1 <= o['v0'] - (0.1 if sill else 0.01) or z0 >= ceil:
+            continue
+        if z0 >= o['v0'] + 0.25:
+            ceil = z0
+        else:
+            o['v0'] = max(o['v0'], z1 + (0.1 if sill else 0.02))
+    if ceil < v_top - 1e-6:
+        o['v1'] = min(o['v1'], ceil - 0.15)
+    if o['v1'] - o['v0'] < 0.5:
+        return False
+    if spans and pv and pv[0] < o['v1'] and pv[1] > o['v0']:
+        ext = 0.07 if sill else 0.0
+        if shape == 'rect' and o.get('lintel', 'flat') in ('flat', 'key'):
+            ext = max(ext, 0.1)
+        if shape != 'rect' and o.get('band', True):
+            ext = max(ext, 0.24)
+        if o.get('surround'):
+            ext = max(ext, 0.11)
+        mg = ext + 0.03
+        cx = (o['u0'] + o['u1']) / 2
+        half = (o['u1'] - o['u0']) / 2
+        for a, b in spans:
+            if b <= cx:
+                half = min(half, cx - b - mg)
+            elif a >= cx:
+                half = min(half, a - cx - mg)
+            else:
+                return False
+        if half < 0.25:
+            return False
+        o['u0'], o['u1'] = cx - half, cx + half
+    o['top_room'] = ceil - o['v1']
+    return True
+
+
+def decor(fr, spec, ext_end=True, ext_pier=None):
+    """Pilastres et bandeaux. ext_end : la facade suivante (au coin de fin) porte aussi bandeaux / pilastres
+    d'angle ; seule cette facade remplit alors le carre du coin (pas de faces confondues, rien chez le voisin)."""
+    W = spec['W']
+    m = spec['margin']
+    n = spec['bays']
+    bw = (W - 2 * m) / n if n > 0 else W
+    pier = spec.get('piers')
+    fr.mb.tag = 'pier'
+    pd = 0.0
     if pier and n > 0:
         pw, pd = pier['w'], pier['d']
         key = pier.get('key', spec['floors'][-1]['wall'])
         skip = ('back', 'bottom') if pier['v0'] > 0.01 else ('back',)
+        corners = pier.get('corners') and m > 0.05
         bs = range(0 if pier.get('edges') else 1, n + 1 if pier.get('edges') else n)
         for b in bs:
             u = m + b * bw
+            if corners and (u - pw / 2 < m or u + pw / 2 > W - m):
+                continue                      # contenu dans le pilastre d'angle
             fr.box(u - pw / 2, u + pw / 2, pier['v0'], pier['v1'], 0.0, pd, key, skip=skip)
-        if pier.get('corners') and m > 0.05:
-            fr.box(0.0, m, pier['v0'], pier['v1'], 0.0, pd, key, skip=skip)
-            fr.box(W - m, W, pier['v0'], pier['v1'], 0.0, pd, key, skip=skip)
-    # bandeaux horizontaux
+        if corners:
+            fr.box(0.0, max(m, m + pw / 2 if pier.get('edges') else m), pier['v0'], pier['v1'], 0.0, pd, key, skip=skip)
+            fr.box(min(W - m, W - m - pw / 2 if pier.get('edges') else W - m), W + (pd if (ext_end if ext_pier is None else ext_pier) else 0.0), pier['v0'], pier['v1'], 0.0, pd, key, skip=skip)
+    # bandeaux horizontaux (jamais au ras des pilastres)
+    fr.mb.tag = 'band'
+    gaps = spec.get('band_gaps') or ()
     for band in spec.get('bands', []):
         v, bh, bd, key = band
-        fr.box(-bd, W + bd, v, v + bh, 0.0, bd, key, skip=('back',))
-    return placed
+        if pd and abs(bd - pd) < 0.02:
+            bd = pd + 0.04
+        a, b = 0.0, W + (bd if ext_end else 0.0)
+        segs = [(a, b)]
+        for g0, g1, vmax in gaps:
+            if v < vmax:
+                segs = [s for x0, x1 in segs for s in ((x0, min(x1, g0)), (max(x0, g1), x1)) if s[1] - s[0] > 0.05]
+        corners = pier and pier.get('corners') and m > 0.05 and bd <= pd
+        for x0, x1 in segs:
+            sk = ['back']
+            if corners and x0 < 1e-6:
+                sk.append('left')
+            if corners and x1 > W - 1e-6 and not ext_end:
+                sk.append('right')
+            fr.box(x0, x1, v, v + bh, 0.0, bd, key, skip=tuple(sk))
+    fr.mb.tag = 'wall'
 
 
-def _rustic(fr, cu0, cu1, v0, v1, op, key, course=0.5, gap=0.05, t=0.035):
-    """Bossage : assises en saillie separees par des joints creux, autour de l'ouverture eventuelle."""
+def _rustic(fr, cu0, cu1, v0, v1, ops, key, course=0.5, gap=0.05, t=0.035, zones=()):
+    """Bossage : assises en saillie separees par des joints creux, autour de l'ouverture eventuelle.
+    zones : bandeaux (v0, v1) ; les assises s'arretent dessous."""
     v = v0 + gap
     while v + course * 0.5 < v1:
         vt = min(v1 - gap * 0.5, v + course - gap)
+        for z0, z1 in zones:
+            if v < z1 and vt > z0:
+                vt = min(vt, z0)
+        if vt - v < 0.1:
+            v += course
+            continue
         spans = [(cu0, cu1)]
-        if op is not None:
-            top = op['v1'] + 0.3
+        for op in ops:                  # ouvertures de tout l'etage : un arc large deborde sur la cellule voisine
+            arch = op.get('shape', 'rect') != 'rect'
+            top = op['v1'] + (0.36 if arch else 0.3)
+            g = 0.29 if arch else 0.14
             if vt > op['v0'] - 0.1 and v < top:
-                spans = [(cu0, op['u0'] - 0.14), (op['u1'] + 0.14, cu1)]
+                a0, a1 = op['u0'] - g, op['u1'] + g
+                spans = [s for x0, x1 in spans for s in ((x0, min(x1, a0)), (max(x0, a1), x1))]
         for a, b in spans:
             if b - a > 0.08:
                 fr.box(a, b, v, vt, 0.0, t, key, skip=('back',))
